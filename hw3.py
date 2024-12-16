@@ -58,13 +58,17 @@ class Trainer:
 class ValueNet(nn.Module):
     def __init__(self, input_size, output_size, hidden_size=64):
         super(ValueNet, self).__init__()
-        self.dummy_layer = nn.Linear(1, 1)
+        self.layer1 = nn.Linear(input_size, hidden_size)
+        self.layer2 = nn.Linear(hidden_size, hidden_size)
+        self.layer3 = nn.Linear(hidden_size, output_size)
 
         # Implement the network architecture, see torch.nn layers.
         
     def forward(self, x):
         # Add activation functions and such
-        return torch.ones(2)
+        x = F.relu(self.layer1(x))
+        x = F.relu(self.layer2(x))
+        return self.layer3(x)
 
     @torch.no_grad()
     def value_no_grad(self, obs):
