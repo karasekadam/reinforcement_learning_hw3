@@ -19,7 +19,7 @@ import torch.nn.functional as F
 """
 
 NAME = "ActorCritic + GAE"
-UCOS = [ 123456, 234567 ]
+UCOS = [ 477757, 485152 ]
 
 """
     The familiar Policy/Trainer interface, including a new value method.
