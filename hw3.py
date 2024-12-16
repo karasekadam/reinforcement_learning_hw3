@@ -532,6 +532,7 @@ RACING_CONTINUOUS = False
 
 
 def train_carracing(env, train_steps, gamma) -> PGPolicy:
+    # The carracing environment produces error with our model, so you dont need to test it
     env = gym.wrappers.TimeLimit(env, max_episode_steps=1000)
 
     # Get dimensions of the environment's state and action spaces
@@ -626,9 +627,10 @@ if __name__ == "__main__":
     """
     env = gym.make("CartPole-v1")
     train_cartpole(env, 50000, 0.99)
-    # env = gym.make("Acrobot-v1")
-    # train_acrobot(env, 100000, 0.99)
-    # env = gym.make("LunarLander-v2")
-    # train_lunarlander(env, 100000, 0.99)
+    env = gym.make("Acrobot-v1")
+    train_acrobot(env, 100000, 0.99)
+    env = gym.make("LunarLander-v2")
+    train_lunarlander(env, 100000, 0.99)
+    # The carracing environment produces error with our model, so you dont need to test it
     # env = gym.make("CarRacing-v2", continuous=RACING_CONTINUOUS)
     # train_carracing(env, 100000, 0.99)
