@@ -1,2 +1,5 @@
 
 /new_venv
+/ubuntu_venv
+/windows_venv
+/infrastructure/utils/__pycache__
