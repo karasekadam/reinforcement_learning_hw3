@@ -83,11 +83,15 @@ class PolicyNet(nn.Module):
     # input ~ dimensions of state space, output ~ action count (discrete envs)
     def __init__(self, input_size, output_size, hidden_size=64):
         super(PolicyNet, self).__init__()
-        self.dummy_layer = nn.Linear(1, 1)
+        self.layer1 = nn.Linear(input_size, hidden_size)
+        self.layer2 = nn.Linear(hidden_size, hidden_size)
+        self.layer3 = nn.Linear(hidden_size, output_size)
 
     # `play` method assumes the forward returns logits
     def forward(self, x):
-        return torch.zeros(2)
+        x = F.relu(self.layer1(x))
+        x = F.relu(self.layer2(x))
+        return self.layer3(x)
 
     @torch.no_grad()
     def play(self, obs):
@@ -276,15 +280,13 @@ class PGTrainer(Trainer):
             # Feed this to your neworks
             state_tensor = torch.stack(states)
             action_tensor = torch.tensor(actions)
-            ...
 
             # Get returns and/or advantages for the loss...
-            self.calculate_returns(rewards, dones, gamma)
-            self.calculate_gae(rewards, state_tensor, dones, gamma)
+            returns = self.calculate_returns(rewards, dones, gamma)
+            advantages = self.calculate_gae(rewards, state_tensor, dones, gamma)
 
             # Update the networks and repeat
             self.update(state_tensor, action_tensor, advantages, returns)
-
 
         return PGPolicy(self.policy_net, self.value_net)
 
@@ -296,48 +298,61 @@ class PGTrainer(Trainer):
             discounted return from that point to the end of episode
         """
 
-        res = torch.zeros(len(rewards))
+        returns = torch.zeros(len(rewards))
+        cumulative = 0
+        for i in reversed(range(len(rewards))):
+            if dones[i]:
+                cumulative = 0  # Reset cumulative reward for terminal states
+            cumulative = rewards[i] + gamma * cumulative
+            returns[i] = cumulative
 
-        for i in range(len(rewards) - 1, -1, -1):
-            # Calculate discounted returns..
-            pass
-
-        return res
+        return returns
 
 
     def calculate_gae(self, rewards, states, dones, gamma):
         """
-            For each collected timestep in the environment, calculate the 
+            For each collected timestep in the environment, calculate the
             Generalized Advantage Estimate.
         """
+        advantages = torch.zeros(len(rewards))
+        values = self.value_net.value_no_grad(torch.stack(states)).squeeze()
 
-        res = torch.zeros(len(rewards))
+        gae = 0
+        for i in reversed(range(len(rewards))):
+            if dones[i]:
+                next_value = 0  # No bootstrap for terminal states
+            else:
+                next_value = values[i + 1]
 
-        # Get the time lagged values
-        values = self.value_net.value_no_grad(states)
+            delta = rewards[i] + gamma * next_value - values[i]
+            gae = delta + gamma * self.gae_lambda * gae * (1 - dones[i])
+            advantages[i] = gae
 
-        # Calculate GAE for each timestep
-        for i in range(len(rewards) - 1, -1, -1):
-            # Calculate GAE
-            pass
-
-        return res
+        return advantages
 
 
     def update(self, states, actions, advantages, returns):
 
-        # Zero the gradients
-        self.value_optimizer.zero_grad()
+        # Compute log probabilities and value predictions
+        log_probs = self.policy_net.log_probs(torch.stack(states), torch.tensor(actions))
+        values = self.value_net(torch.stack(states)).squeeze()
+
+        # Normalize advantages
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        # Actor loss (policy gradient loss)
+        actor_loss = -(log_probs * advantages).mean()
+
+        # Critic loss (value function loss)
+        critic_loss = F.mse_loss(values, returns)
+
+        # Perform optimization
         self.policy_optimizer.zero_grad()
-
-        # Calculate values and log probabilites under the current networks (these should be differentiable)
-        values = ...
-        logprobs = ...
-
-        # Construct the loss and take a learning step
-        ...
-
+        actor_loss.backward()
         self.policy_optimizer.step()
+
+        self.value_optimizer.zero_grad()
+        critic_loss.backward()
         self.value_optimizer.step()
 
 
@@ -445,8 +460,35 @@ def wrap_carracing(env):
     """
     return env
 
-def wrap_cartpole(env):
-    return env
+def wrap_cartpole(env, train_steps, gamma):
+    env = gym.wrappers.FlattenObservation(env)
+
+    """
+        The episodes in this environment can be very long, you can also limit
+        their length by using another wrapper.
+
+        Wrappers can be applied sequentially like so:
+    """
+
+    env = gym.wrappers.TimeLimit(env, max_episode_steps=1000)
+
+    human_env = gym.wrappers.FlattenObservation(gym.make("CartPole-v1",
+                                                         render_mode="human"))
+
+    # Training example
+    states, num_actions = get_env_dimensions(env)
+    trainer = PGTrainer(env, states, num_actions)
+    policy = trainer.train(0.99, train_steps)
+
+    # Run on rendered environment
+    obs, _ = human_env.reset()
+
+    obs = tu.to_torch(obs)
+
+    for i in range(200):
+        step = policy.play(obs)
+        # Go forward
+        obs, reward, trunc, term, _ = human_env.step(step)
 
 def wrap_acrobot(env):
     return env
@@ -464,5 +506,5 @@ if __name__ == "__main__":
         experiment with a continuous action space. The evaluation will be done
         based on the value of this flag.
     """
-    env = gym.make("CarRacing-v2", continuous=RACING_CONTINUOUS)
-    train_carracing(env, 1000, 0.99)
+    env = gym.make("CartPole-v1")#, continuous=RACING_CONTINUOUS)
+    wrap_cartpole(env, 1000000, 0.99)
