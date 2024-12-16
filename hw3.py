@@ -386,7 +386,7 @@ def train_cartpole(env, train_steps, gamma) -> PGPolicy:
         env=env,
         state_dim=state_dim,
         num_actions=num_actions,
-        batch_size=100 # batch_size could achieve better result (1000+) but also a very bad result (<100)
+        batch_size=250 # batch_size could achieve better result (1000+) but also a very bad result (<100)
     )
 
     trained_policy = trainer.train(gamma=gamma, train_steps=train_steps)
