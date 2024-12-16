@@ -1,4 +1,7 @@
+import time
+
 import infrastructure.utils.torch_utils as tu
+from infrastructure.utils.logger import Logger
 
 import gymnasium as gym
 import numpy as np
@@ -15,8 +18,8 @@ import torch.nn.functional as F
         b) UCO's of the members of your team
 """
 
-NAME = "OnlyPoles"
-UCOS = [ 477757, 485152 ]
+NAME = "ActorCritic + GAE"
+UCOS = [ 123456, 234567 ]
 
 """
     The familiar Policy/Trainer interface, including a new value method.
@@ -57,18 +60,22 @@ class Trainer:
 class ValueNet(nn.Module):
     def __init__(self, input_size, output_size, hidden_size=64):
         super(ValueNet, self).__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)  # First fully connected layer
+        self.fc2 = nn.Linear(hidden_size, hidden_size)  # Second fully connected layer
+        self.fc_out = nn.Linear(hidden_size, output_size)  # Output layer
+
         # Implement the network architecture, see torch.nn layers.
-
-        self.fc1 = nn.Linear(input_size, hidden_size)  # input layer
-        self.fc2 = nn.Linear(hidden_size, hidden_size)  # hidden layer
-        self.fc_out = nn.Linear(hidden_size, output_size)  # output layer
-
+        
     def forward(self, x):
-        # For input and hidden layer, using ReLu
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc_out(x)
+        # Add activation functions and such
+        x = F.relu(self.fc1(x))  # First hidden layer with ReLU activation
+        x = F.relu(self.fc2(x))  # Second hidden layer with ReLU activation
+        x = self.fc_out(x)  # Output layer (no activation for value prediction)
         return x
+
+    @torch.no_grad()
+    def value_no_grad(self, obs):
+        return self(obs)
 
     def value(self, obs):
         return self(obs)
@@ -97,7 +104,6 @@ class PolicyNet(nn.Module):
         output = self(obs)
         dist = Categorical(logits=output)
         return dist.log_prob(actions)
-
 
 
 
@@ -133,7 +139,15 @@ class PGPolicy(Policy):
 
     # Returns value
     def value(self, state):
-        return self.value_net.value(state)
+        return self.value_net.value_no_grad(state)
+    
+    @torch.no_grad()
+    def value_no_grad(self, state):
+        """
+        Evaluate the value of a state without computing gradients.
+        """
+        return self.value_net.value_no_grad(state)
+
 
 def collect_trajectories(env, policy, step_limit, gamma, bootstrap_trunc):
 
@@ -177,6 +191,8 @@ def collect_trajectories(env, policy, step_limit, gamma, bootstrap_trunc):
             done = False
 
             while not done:
+
+                # Remember to cast observations to tensors for your models
                 action = policy.play(obs)
 
                 states.append(obs)
@@ -189,8 +205,9 @@ def collect_trajectories(env, policy, step_limit, gamma, bootstrap_trunc):
 
                 truncated = truncated or steps == step_limit
         
+                # Optionally bootstrap on truncation
                 if truncated and bootstrap_trunc:
-                    bootstrap = tu.to_numpy(gamma * policy.value(obs))[0]
+                    bootstrap = tu.to_numpy(gamma * policy.value_no_grad(obs))[0]
                     reward += bootstrap
 
                 rewards.append(reward)
@@ -235,6 +252,7 @@ class PGTrainer(Trainer):
         self.policy_net = PolicyNet(state_dim, num_actions)
         self.value_net = ValueNet(state_dim, 1)
 
+        # Optimizers for each of the nets
         self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(),
                 lr=policy_lr)
         self.value_optimizer = torch.optim.Adam(self.value_net.parameters(),
@@ -255,16 +273,18 @@ class PGTrainer(Trainer):
 
         while total_steps < train_steps:
             if total_steps != 0 and total_steps % 1000:
-                print(f"Training in progess: {total_steps/train_steps * 100 :.2f} %")
+                print(f"Currently on step {total_steps} [{total_steps/train_steps * 100 :.2f}%]")
             policy = PGPolicy(self.policy_net, self.value_net)
             states, actions, rewards, dones = collect_trajectories(
                 self.env, policy, self.batch_size, gamma, bootstrap_trunc=True
             )
 
+            # Convert to tensors
             state_tensor = torch.stack(states).requires_grad_()
             action_tensor = torch.tensor(actions, dtype=torch.long)
             rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
 
+            # Compute returns and advantages
             returns = self.calculate_returns(rewards_tensor, dones, gamma)
             advantages = self.calculate_gae(rewards_tensor, state_tensor, dones, gamma)
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)  # Normalize
@@ -274,8 +294,8 @@ class PGTrainer(Trainer):
 
             total_steps += len(rewards)
 
-        print("Training done!")
         return PGPolicy(self.policy_net, self.value_net)
+
 
     def calculate_returns(self, rewards, dones, gamma):
 
@@ -285,13 +305,13 @@ class PGTrainer(Trainer):
         """
         
         res = torch.zeros_like(rewards)
-        cumul_reward = 0
+        cumul_reward = 0  # This variable will hold the cumulative reward
 
-        for rew in range(len(rewards) - 1, -1, -1) :
-            if dones[rew]:
+        for i in range(len(rewards) - 1, -1, -1) :
+            if dones[i]:
                 cumul_reward = 0
-            cumul_reward = res[rew] + gamma * cumul_reward
-            res[rew] = cumul_reward
+            cumul_reward = res[i] + gamma * cumul_reward
+            res[i] = cumul_reward
         return res
 
 
@@ -303,13 +323,14 @@ class PGTrainer(Trainer):
 
         res = torch.zeros(len(rewards))
 
-        values = self.value_net.value(states)
+        # Get the time lagged values
+        values = self.value_net.value_no_grad(states)
         gae = 0
 
         # Calculate GAE for each timestep
         for i in range(len(rewards) - 1, -1, -1):
             if dones[i]:
-                gae = 0
+                gae = 0  # Reset GAE at episode boundaries
             delta = rewards[i] + gamma * (values[i + 1] if i + 1 < len(values) else 0) - values[i]
             gae = delta + gamma * self.gae_lambda * gae
             res[i] = gae
@@ -319,14 +340,17 @@ class PGTrainer(Trainer):
 
     def update(self, states, actions, advantages, returns):
 
+        # Zero the gradients
         self.value_optimizer.zero_grad()
         self.policy_optimizer.zero_grad()
 
+        # Calculate values and log probabilites under the current networks (these should be differentiable)
         values = self.value_net(states).squeeze()
         log_probs = self.policy_net.log_probs(states, actions)
 
         advantages = advantages.detach()
 
+        # Construct the loss and take a learning step
         policy_loss = -(log_probs * advantages).mean()
         value_loss = ((returns - values) ** 2).mean()
 
@@ -410,10 +434,94 @@ def train_cartpole(env, train_steps, gamma) -> PGPolicy:
     return trained_policy
 
 def train_acrobot(env, train_steps, gamma) -> PGPolicy:
-    pass
+    # Wrapping the environment (if needed)
+    env = gym.wrappers.TimeLimit(env, max_episode_steps=1000)
+
+    # Get dimensions of the environment's state and action spaces
+    state_dim, num_actions = get_env_dimensions(env)
+
+    # Initialize the PGTrainer
+    trainer = PGTrainer(
+        env=env,
+        state_dim=state_dim,
+        num_actions=num_actions,
+        policy_lr=1e-2,  # Learning rate for the policy network
+        value_lr=1e-2,  # Learning rate for the value network
+        gae_lambda=0.99,  # GAE lambda parameter
+        batch_size=500  # Batch size (number of steps per update)
+    )
+
+    # Train the policy
+    trained_policy = trainer.train(gamma=gamma, train_steps=train_steps)
+
+    # Render the trained policy on a human-readable environment
+    human_env = gym.wrappers.TimeLimit(gym.make("Acrobot-v1", render_mode="human"), max_episode_steps=500)
+    for i in range(10):
+        obs, _ = human_env.reset()
+
+        total_reward = 0
+        done = False
+
+        while not done:
+            # Convert observation to tensor
+            obs = tu.to_torch(obs)
+
+            # Play an action using the trained policy
+            action = trained_policy.play(obs)
+
+            # Take the action in the environment
+            obs, reward, done, _, _ = human_env.step(action)
+            total_reward += reward
+            time.sleep(0.01)
+
+        print("Total Reward with Trained Policy:", total_reward)
+
+    return trained_policy
 
 def train_lunarlander(env, train_steps, gamma) -> PGPolicy:
-    pass
+    # Wrapping the environment (if needed)
+    env = gym.wrappers.TimeLimit(env, max_episode_steps=1000)
+
+    # Get dimensions of the environment's state and action spaces
+    state_dim, num_actions = get_env_dimensions(env)
+
+    # Initialize the PGTrainer
+    trainer = PGTrainer(
+        env=env,
+        state_dim=state_dim,
+        num_actions=num_actions,
+        policy_lr=1e-3,  # Learning rate for the policy network
+        value_lr=1e-3,  # Learning rate for the value network
+        gae_lambda=0.99,  # GAE lambda parameter
+        batch_size=300  # Batch size (number of steps per update)
+    )
+
+    # Train the policy
+    trained_policy = trainer.train(gamma=gamma, train_steps=train_steps)
+
+    # Render the trained policy on a human-readable environment
+    human_env = gym.wrappers.TimeLimit(gym.make("LunarLander-v2", render_mode="human"), max_episode_steps=500)
+    for i in range(10):
+        obs, _ = human_env.reset()
+
+        total_reward = 0
+        done = False
+
+        while not done:
+            # Convert observation to tensor
+            obs = tu.to_torch(obs)
+
+            # Play an action using the trained policy
+            action = trained_policy.play(obs)
+
+            # Take the action in the environment
+            obs, reward, done, _, _ = human_env.step(action)
+            total_reward += reward
+            time.sleep(0.01)
+
+        print("Total Reward with Trained Policy:", total_reward)
+
+    return trained_policy
 
 
 """
@@ -424,42 +532,48 @@ RACING_CONTINUOUS = False
 
 
 def train_carracing(env, train_steps, gamma) -> PGPolicy:
-    """
-        As the observations are 96x96 RGB images you can either use a
-        convolutional neural network, or you have to flatten the observations.
-
-        You can use gymnasium wrappers to achieve the second goal:
-    """
-    env = gym.wrappers.FlattenObservation(env)
-
-    """
-        The episodes in this environment can be very long, you can also limit
-        their length by using another wrapper.
-
-        Wrappers can be applied sequentially like so:
-    """
-
     env = gym.wrappers.TimeLimit(env, max_episode_steps=1000)
 
-    human_env = gym.wrappers.FlattenObservation(gym.make("CarRacing-v2",
-                                                        continuous=RACING_CONTINUOUS,
-                                                        render_mode="human"))
+    # Get dimensions of the environment's state and action spaces
+    state_dim, num_actions = get_env_dimensions(env)
 
+    # Initialize the PGTrainer
+    trainer = PGTrainer(
+        env=env,
+        state_dim=state_dim,
+        num_actions=num_actions,
+        policy_lr=1e-3,  # Learning rate for the policy network
+        value_lr=1e-3,  # Learning rate for the value network
+        gae_lambda=0.99,  # GAE lambda parameter
+        batch_size=500  # Batch size (number of steps per update)
+    )
 
-    # Training example
-    states, num_actions = get_env_dimensions(env)
-    trainer = PGTrainer(env, states, num_actions)
-    policy = trainer.train(0.99, train_steps)
+    # Train the policy
+    trained_policy = trainer.train(gamma=gamma, train_steps=train_steps)
 
+    # Render the trained policy on a human-readable environment
+    human_env = gym.wrappers.TimeLimit(gym.make("CarRacing-v2", render_mode="human"), max_episode_steps=500)
+    for i in range(10):
+        obs, _ = human_env.reset()
 
-    # Run on rendered environment
-    obs, _ = human_env.reset()
+        total_reward = 0
+        done = False
 
-    obs = tu.to_torch(obs)
+        while not done:
+            # Convert observation to tensor
+            obs = tu.to_torch(obs)
 
-    for i in range(200):
-        # Go forward
-        obs, reward, trunc, term, _ = human_env.step(3)
+            # Play an action using the trained policy
+            action = trained_policy.play(obs)
+
+            # Take the action in the environment
+            obs, reward, done, _, _ = human_env.step(action)
+            total_reward += reward
+            time.sleep(0.01)
+
+        print("Total Reward with Trained Policy:", total_reward)
+
+    return trained_policy
 
 
 
@@ -496,14 +610,11 @@ def wrap_cartpole(env):
 
     return PunishmentWrapper(env)
 
-
 def wrap_acrobot(env):
     return env
 
 def wrap_lunarlander(env):
     return env
-
-
 
 
 if __name__ == "__main__":
@@ -514,5 +625,10 @@ if __name__ == "__main__":
         based on the value of this flag.
     """
     env = gym.make("CartPole-v1")
-    env = wrap_cartpole(env)
     train_cartpole(env, 50000, 0.99)
+    # env = gym.make("Acrobot-v1")
+    # train_acrobot(env, 100000, 0.99)
+    # env = gym.make("LunarLander-v2")
+    # train_lunarlander(env, 100000, 0.99)
+    # env = gym.make("CarRacing-v2", continuous=RACING_CONTINUOUS)
+    # train_carracing(env, 100000, 0.99)
