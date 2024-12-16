@@ -1,3 +1,5 @@
+import time
+
 import infrastructure.utils.torch_utils as tu
 from infrastructure.utils.logger import Logger
 
@@ -16,7 +18,7 @@ import torch.nn.functional as F
         b) UCO's of the members of your team
 """
 
-NAME = "AlgorithmName"
+NAME = "ActorCritic + GAE"
 UCOS = [ 123456, 234567 ]
 
 """
@@ -296,30 +298,6 @@ class PGTrainer(Trainer):
 
         return PGPolicy(self.policy_net, self.value_net)
 
-    #     learning_steps = train_steps // self.batch_size
-    #     self.env.reset()
-
-    #     for i in range(learning_steps):
-
-    #         policy = PGPolicy(self.policy_net, self.value_net)
-
-    #         states, actions, rewards, dones = collect_trajectories(self.env, policy, self.batch_size, gamma, bootstrap_trunc=False)
-
-    #         # Feed this to your neworks
-    #         state_tensor = torch.stack(states)
-    #         action_tensor = torch.tensor(actions)
-    #         ...
-
-    #         # Get returns and/or advantages for the loss...
-    #         self.calculate_returns(rewards, dones, gamma)
-    #         self.calculate_gae(rewards, state_tensor, dones, gamma)
-
-    #         # Update the networks and repeat
-    #         self.update(state_tensor, action_tensor, advantages, returns)
-
-
-    #     return PGPolicy(self.policy_net, self.value_net)
-
 
     def calculate_returns(self, rewards, dones, gamma):
 
@@ -439,7 +417,7 @@ def train_cartpole(env, train_steps, gamma) -> PGPolicy:
         num_actions=num_actions,
         policy_lr=1e-3,  # Learning rate for the policy network
         value_lr=1e-3,   # Learning rate for the value network
-        gae_lambda=0.95, # GAE lambda parameter
+        gae_lambda=0.99, # GAE lambda parameter
         batch_size=500   # Batch size (number of steps per update)
     )
 
@@ -463,16 +441,101 @@ def train_cartpole(env, train_steps, gamma) -> PGPolicy:
         # Take the action in the environment
         obs, reward, done, _, _ = human_env.step(action)
         total_reward += reward
+        time.sleep(0.01)
 
     print("Total Reward with Trained Policy:", total_reward)
 
     return trained_policy
 
 def train_acrobot(env, train_steps, gamma) -> PGPolicy:
-    pass
+    # Wrapping the environment (if needed)
+    env = gym.wrappers.TimeLimit(env, max_episode_steps=1000)
+
+    # Get dimensions of the environment's state and action spaces
+    state_dim, num_actions = get_env_dimensions(env)
+
+    # Initialize the PGTrainer
+    trainer = PGTrainer(
+        env=env,
+        state_dim=state_dim,
+        num_actions=num_actions,
+        policy_lr=1e-2,  # Learning rate for the policy network
+        value_lr=1e-2,  # Learning rate for the value network
+        gae_lambda=0.99,  # GAE lambda parameter
+        batch_size=500  # Batch size (number of steps per update)
+    )
+
+    # Train the policy
+    trained_policy = trainer.train(gamma=gamma, train_steps=train_steps)
+
+    # Render the trained policy on a human-readable environment
+    human_env = gym.wrappers.TimeLimit(gym.make("Acrobot-v1", render_mode="human"), max_episode_steps=500)
+    for i in range(10):
+        obs, _ = human_env.reset()
+
+        total_reward = 0
+        done = False
+
+        while not done:
+            # Convert observation to tensor
+            obs = tu.to_torch(obs)
+
+            # Play an action using the trained policy
+            action = trained_policy.play(obs)
+
+            # Take the action in the environment
+            obs, reward, done, _, _ = human_env.step(action)
+            total_reward += reward
+            time.sleep(0.01)
+
+        print("Total Reward with Trained Policy:", total_reward)
+
+    return trained_policy
 
 def train_lunarlander(env, train_steps, gamma) -> PGPolicy:
-    pass
+    # Wrapping the environment (if needed)
+    env = gym.wrappers.TimeLimit(env, max_episode_steps=1000)
+
+    # Get dimensions of the environment's state and action spaces
+    state_dim, num_actions = get_env_dimensions(env)
+
+    # Initialize the PGTrainer
+    trainer = PGTrainer(
+        env=env,
+        state_dim=state_dim,
+        num_actions=num_actions,
+        policy_lr=1e-3,  # Learning rate for the policy network
+        value_lr=1e-3,  # Learning rate for the value network
+        gae_lambda=0.99,  # GAE lambda parameter
+        batch_size=300  # Batch size (number of steps per update)
+    )
+
+    # Train the policy
+    trained_policy = trainer.train(gamma=gamma, train_steps=train_steps)
+
+    # Render the trained policy on a human-readable environment
+    human_env = gym.wrappers.TimeLimit(gym.make("LunarLander-v2", render_mode="human"), max_episode_steps=500)
+    for i in range(10):
+        obs, _ = human_env.reset()
+
+        total_reward = 0
+        done = False
+
+        while not done:
+            # Convert observation to tensor
+            obs = tu.to_torch(obs)
+
+            # Play an action using the trained policy
+            action = trained_policy.play(obs)
+
+            # Take the action in the environment
+            obs, reward, done, _, _ = human_env.step(action)
+            total_reward += reward
+            time.sleep(0.01)
+
+        print("Total Reward with Trained Policy:", total_reward)
+
+    return trained_policy
 
 
 """
@@ -483,42 +546,48 @@ RACING_CONTINUOUS = False
 
 
 def train_carracing(env, train_steps, gamma) -> PGPolicy:
-    """
-        As the observations are 96x96 RGB images you can either use a
-        convolutional neural network, or you have to flatten the observations.
-
-        You can use gymnasium wrappers to achieve the second goal:
-    """
-    env = gym.wrappers.FlattenObservation(env)
-
-    """
-        The episodes in this environment can be very long, you can also limit
-        their length by using another wrapper.
-
-        Wrappers can be applied sequentially like so:
-    """
-
     env = gym.wrappers.TimeLimit(env, max_episode_steps=1000)
 
-    human_env = gym.wrappers.FlattenObservation(gym.make("CarRacing-v2",
-                                                        continuous=RACING_CONTINUOUS,
-                                                        render_mode="human"))
+    # Get dimensions of the environment's state and action spaces
+    state_dim, num_actions = get_env_dimensions(env)
 
+    # Initialize the PGTrainer
+    trainer = PGTrainer(
+        env=env,
+        state_dim=state_dim,
+        num_actions=num_actions,
+        policy_lr=1e-3,  # Learning rate for the policy network
+        value_lr=1e-3,  # Learning rate for the value network
+        gae_lambda=0.99,  # GAE lambda parameter
+        batch_size=500  # Batch size (number of steps per update)
+    )
 
-    # Training example
-    states, num_actions = get_env_dimensions(env)
-    trainer = PGTrainer(env, states, num_actions)
-    policy = trainer.train(0.99, train_steps)
+    # Train the policy
+    trained_policy = trainer.train(gamma=gamma, train_steps=train_steps)
 
+    # Render the trained policy on a human-readable environment
+    human_env = gym.wrappers.TimeLimit(gym.make("CarRacing-v2", render_mode="human"), max_episode_steps=500)
+    for i in range(10):
+        obs, _ = human_env.reset()
 
-    # Run on rendered environment
-    obs, _ = human_env.reset()
+        total_reward = 0
+        done = False
 
-    obs = tu.to_torch(obs)
+        while not done:
+            # Convert observation to tensor
+            obs = tu.to_torch(obs)
 
-    for i in range(200):
-        # Go forward
-        obs, reward, trunc, term, _ = human_env.step(3)
+            # Play an action using the trained policy
+            action = trained_policy.play(obs)
+
+            # Take the action in the environment
+            obs, reward, done, _, _ = human_env.step(action)
+            total_reward += reward
+            time.sleep(0.01)
+
+        print("Total Reward with Trained Policy:", total_reward)
+
+    return trained_policy
 
 
 
@@ -551,8 +620,6 @@ def wrap_lunarlander(env):
     return env
 
 
-
-
 if __name__ == "__main__":
     """
         The flag RACING_CONTINUOUS determines whether the CarRacing environment
@@ -560,7 +627,11 @@ if __name__ == "__main__":
         experiment with a continuous action space. The evaluation will be done
         based on the value of this flag.
     """
-    # env = gym.make("CartPole-v1", continuous=RACING_CONTINUOUS)
-    env = gym.make("CartPole-v1")
-    # train_carracing(env, 1000, 0.99)
-    train_cartpole(env, 5000, 0.25)
+    # env = gym.make("CartPole-v1")
+    # train_cartpole(env, 50000, 0.99)
+    env = gym.make("Acrobot-v1")
+    train_acrobot(env, 100000, 0.99)
+    # env = gym.make("LunarLander-v2")
+    # train_lunarlander(env, 100000, 0.99)
+    # env = gym.make("CarRacing-v2", continuous=RACING_CONTINUOUS)
+    # train_carracing(env, 100000, 0.99)
